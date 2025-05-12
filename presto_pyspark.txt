@@ -1,0 +1,201 @@
+
+Sure! Let's go through your code **step by step** in simple terms, like you're new to programming and just getting started with Spark.
+
+---
+
+### 📦 Step 1: Import Required Libraries
+
+```python
+from pyspark.sql import SparkSession 
+from pyspark.sql import functions as F
+from pyspark.sql.types import StructType, StructField, StringType, TimestampType, IntegerType, ArrayType
+from pyspark.ml.feature import CountVectorizer, MinHashLSH
+from pyspark.ml.clustering import KMeans
+from collections import OrderedDict
+from datetime import datetime, timedelta
+```
+
+* These are like tools you're bringing into your project.
+* **`SparkSession`**: The entry point to Spark.
+* **`functions as F`**: A shortcut to use Spark SQL functions.
+* **`types`**: Define the shape of your data.
+* **`CountVectorizer, MinHashLSH`**: Tools for feature extraction and similarity checking.
+* **`KMeans`**: A clustering algorithm (to group similar data).
+* **`OrderedDict`**: A way to remove duplicates but keep the order.
+* **`datetime`**: Helps to work with time and dates.
+
+---
+
+### 🚀 Step 2: Start Spark
+
+```python
+spark = SparkSession.builder.appName("MinHashLSHExample").getOrCreate()
+```
+
+* Starts a Spark session (like opening a workbook in Excel).
+* You give your job a name: `"MinHashLSHExample"`.
+
+---
+
+### 📝 Step 3: Create Fake Log Data
+
+```python
+data = [
+    ("case1", "A", datetime(2024, 1, 1, 8, 0)),
+    ...
+]
+```
+
+* You make up some example event data. Each item has:
+
+  * A **case ID** (like a user or process ID),
+  * An **activity** (what happened),
+  * A **timestamp** (when it happened).
+
+---
+
+### 📊 Step 4: Define Schema and Create DataFrame
+
+```python
+schema = StructType([
+    StructField("Case Id", StringType()),
+    StructField("Activity", StringType()),
+    StructField("Start Time", TimestampType())
+])
+df = spark.createDataFrame(data, schema)
+```
+
+* You define the shape (schema) of your data table.
+* Then you create a **Spark DataFrame** — think of it like an Excel sheet with rows and columns.
+
+---
+
+### 🔁 Step 5: Define Function to Remove Duplicates in Order
+
+```python
+@F.udf(ArrayType(IntegerType()))
+def remove_duplicates(seq):
+    return list(OrderedDict.fromkeys(seq))
+```
+
+* You define a custom function (UDF) to **remove duplicate numbers** from a list **but keep the order**.
+* This will be used later when you're making paths of activities.
+
+---
+
+### 🔢 Step 6: Convert Activities to Numbers
+
+```python
+activity_indexed = df.select("Activity").distinct().rdd.zipWithIndex().toDF()
+```
+
+* Each unique activity (like "A", "B", "C") is given a unique number, like a label:
+
+  * "A" → 0, "B" → 1, etc.
+
+```python
+activity_indexed = activity_indexed.select(
+    F.col("_1.Activity").alias("Activity"),
+    F.col("_2").cast(IntegerType()).alias("activity_code")
+)
+df = df.join(activity_indexed, on="Activity")
+```
+
+* You join this info back to your main data. Now each activity has a number (`activity_code`).
+
+---
+
+### 🧱 Step 7: Create Task Path Per Case
+
+```python
+df = df.withColumn("Start Time", F.col("Start Time").cast("timestamp"))
+df = df.withColumn("event_rank", F.row_number().over(
+    Window.partitionBy("Case Id").orderBy("Start Time")))
+```
+
+* You ensure time is in the correct format.
+* You **rank** events per case, based on time.
+
+```python
+df_path = df.groupBy("Case Id").agg(F.collect_list("activity_code").alias("activity_path"))
+df_path = df_path.withColumn("taskpath", remove_duplicates("activity_path"))
+```
+
+* You **group** events by Case ID and **collect** the list of activity codes.
+* Then you **remove duplicates**, so you get a unique sequence of activities per case.
+
+---
+
+### 🎯 Step 8: Convert Paths into Features (for ML)
+
+```python
+cv = CountVectorizer(inputCol="taskpath", outputCol="features")
+cv_model = cv.fit(df_path)
+vectorized_df = cv_model.transform(df_path)
+```
+
+* Turn your list of activity codes into a **numerical feature vector**.
+* This helps machine learning models understand your data.
+
+---
+
+### 🔍 Step 9: Use MinHashLSH for Similarity
+
+```python
+mh = MinHashLSH(inputCol="features", outputCol="hashes", numHashTables=5)
+mh_model = mh.fit(vectorized_df)
+transformed = mh_model.transform(vectorized_df)
+```
+
+* You apply **MinHashLSH**, a technique to find **similar** activity sequences quickly.
+* This creates "hashes" representing each case’s sequence.
+
+---
+
+### 🧠 Step 10: Cluster Similar Cases with KMeans
+
+```python
+kmeans = KMeans(k=2, seed=42, featuresCol="features")
+model = kmeans.fit(transformed)
+clustered = model.transform(transformed).withColumnRenamed("prediction", "clusterid")
+```
+
+* You group similar cases into **2 clusters** (you set `k=2`).
+* Each case gets a **cluster ID** (like "Group 1" or "Group 2").
+
+presto_pyspark
+---
+
+### 📦 Step 11: Join Cluster Info Back to the Original Data
+
+```python
+final_df = df.join(clustered.select("Case Id", "clusterid"), on="Case Id")
+```
+
+* You bring back the cluster info into your full dataset.
+
+---
+
+### 📺 Step 12: Show Results
+
+```python
+final_df.select("Case Id", "Activity", "Start Time", "clusterid").orderBy("Case Id", "Start Time").show()
+```
+
+* You **display** the final table showing each case, its activities, timestamps, and which cluster it belongs to.
+
+---
+
+### ✅ Summary
+
+This code does the following in simple terms:
+
+1. Creates fake log data (like user actions with timestamps).
+2. Maps activities to numbers.
+3. Tracks the activity path of each user/process.
+4. Uses machine learning tools to convert those paths into features.
+5. Applies **similarity detection** (MinHashLSH).
+6. Clusters similar cases together with **KMeans**.
+7. Shows which case belongs to which cluster.
+
+Let me know if you'd like a diagram or simple visualization of this flow — happy to help!
